@@ -1,9 +1,11 @@
-# Render Blueprint: 가격 API(웹 서비스) + 매일 수집(크론 잡)
+# Render Blueprint: 앱이 부르는 가격 API (무료 플랜 웹 서비스)
+# 매일 수집은 GitHub Actions(.github/workflows/collect.yml)가 맡음.
 # 비밀값(sync: false)은 Render 대시보드에서 직접 입력함.
 services:
   - type: web
     name: peach-price-api
     runtime: python
+    plan: free
     region: singapore
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
@@ -15,19 +17,3 @@ services:
         sync: false
       - key: REQUIRE_AUTH
         value: "true"
-
-  - type: cron
-    name: peach-price-collect
-    runtime: python
-    region: singapore
-    # 매일 한국 시간 16:10 (UTC 07:10). 비수기에는 스크립트가 바로 끝남.
-    schedule: "10 7 * * *"
-    buildCommand: pip install -r requirements.txt
-    startCommand: python collect.py daily
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.7
-      - key: KAT_SERVICE_KEY
-        sync: false
-      - key: FIREBASE_SERVICE_ACCOUNT
-        sync: false
