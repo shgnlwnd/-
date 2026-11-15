@@ -42,12 +42,38 @@ def verify_user(authorization: str | None = Header(default=None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "로그인이 필요합니다")
     from firebase_admin import auth
+    token = authorization.split(" ", 1)[1]
+    for app_ in _auth_apps():
+        try:
+            return auth.verify_id_token(token, app=app_)
+        except Exception:
+            continue
+    raise HTTPException(401, "로그인 정보가 올바르지 않습니다")
+
+
+_auth_cache: list = []
+
+
+def _auth_apps():
+    """앱 로그인(Firebase Auth) 프로젝트별로 토큰 검증용 Firebase 앱을 만듦.
+
+    자료 저장(Firestore)은 sfm-work, 앱 로그인은 peachscope-a92c1처럼 프로젝트가 다를 수 있어
+    FIREBASE_AUTH_PROJECTS(쉼표 구분)에 적힌 프로젝트의 토큰을 모두 받아 줌.
+    """
+    if _auth_cache:
+        return _auth_cache
+    import firebase_admin
     from peach_price.store import db
-    db()  # Firebase 초기화
-    try:
-        return auth.verify_id_token(authorization.split(" ", 1)[1])
-    except Exception:
-        raise HTTPException(401, "로그인 정보가 올바르지 않습니다")
+    db()  # 기본 Firebase 앱 초기화 (서비스 계정 자격 증명)
+    default = firebase_admin.get_app()
+    for pid in [p.strip() for p in config.AUTH_PROJECTS if p.strip()]:
+        name = f"auth-{pid}"
+        try:
+            a = firebase_admin.get_app(name)
+        except ValueError:
+            a = firebase_admin.initialize_app(default.credential, {"projectId": pid}, name=name)
+        _auth_cache.append(a)
+    return _auth_cache
 
 
 @app.get("/health")
