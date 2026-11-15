@@ -5,6 +5,8 @@ GET /prices?size=4&market=380401&date=2027-06-25
   - market: 도매시장 코드. 비우면 전국
   - date: 기준일 (기본 오늘, 한국 시간). 시험용
   - 헤더: Authorization: Bearer <Firebase ID 토큰>  (REQUIRE_AUTH=true일 때)
+GET /forecast?harvest_date=2027-06-22&size=4
+  - 예상 수확일 앞뒤 3일(총 7일) 일별 예상 가격·범위·예측 오차
 GET /markets   시장 코드 목록
 GET /health    상태 확인
 """
@@ -56,6 +58,41 @@ def health():
 @app.get("/markets")
 def markets():
     return [{"code": k, "name": v} for k, v in config.MARKETS.items()]
+
+
+_forecaster = {"day": None, "obj": None}
+
+
+def get_forecaster(store):
+    """하루에 한 번만 다시 학습함 (자료가 하루 단위로만 바뀜)."""
+    from peach_price.forecast import Forecaster
+    today = datetime.now(KST).date()
+    if _forecaster["day"] != today or _forecaster["obj"] is None:
+        docs = []
+        for y in range(today.year - 8, today.year + 1):
+            docs.extend(store.get_year(y))
+        _forecaster["obj"] = Forecaster(docs)
+        _forecaster["day"] = today
+    return _forecaster["obj"]
+
+
+@app.get("/forecast")
+def forecast(harvest_date: str = Query(..., description="예상 수확일 YYYY-MM-DD"),
+             size: str = Query("4"),
+             today_: str | None = Query(None, alias="today"),
+             _user=Depends(verify_user), store=Depends(get_store)):
+    """예상 수확일 앞뒤 3일(총 7일)의 일별 예상 가격, 범위, 예측 오차."""
+    if size not in SIZES:
+        raise HTTPException(400, f"size는 {sorted(SIZES, key=float)} 중 하나")
+    try:
+        harvest = date.fromisoformat(harvest_date)
+        today = date.fromisoformat(today_) if today_ else datetime.now(KST).date()
+    except ValueError:
+        raise HTTPException(400, "날짜는 YYYY-MM-DD 형식")
+    try:
+        return get_forecaster(store).forecast(harvest, float(size), today)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/prices")
