@@ -53,5 +53,8 @@ NUM_OF_ROWS = 1000
 # Firestore 컬렉션 이름
 FIRESTORE_COLLECTION = os.environ.get("FIRESTORE_COLLECTION", "peach_daily")
 
+# 로그인 토큰을 받아 줄 Firebase 프로젝트 (앱 로그인 프로젝트, 쉼표로 여러 개)
+AUTH_PROJECTS = os.environ.get("FIREBASE_AUTH_PROJECTS", "peachscope-a92c1,sfm-work").split(",")
+
 # 앱 요청에 Firebase 로그인 토큰을 요구할지 여부
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "true").lower() == "true"

@@ -188,6 +188,8 @@ class Forecaster:
         if size not in self.model.sizes:
             raise ValueError(f"{size:g}kg 상자 자료가 없음. 가능한 크기: {[f'{s:g}' for s in self.model.sizes]}")
         days = [harvest + timedelta(days=i) for i in range(-3, 4)]
+        if not (in_window(days[0]) and in_window(days[-1])):
+            raise ValueError("예상 수확일이 출하기 범위(6월 4일~7월 12일) 밖이라 가격을 예측할 수 없음")
         as_of = min(today, days[0] - timedelta(days=1))
         lv, level_src = self.model.year_level(harvest.year, size, as_of)
         curve = self.model.curve(days, size)
