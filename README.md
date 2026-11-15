@@ -63,3 +63,4 @@
 - 매일 수집: GitHub 저장소 `shgnlwnd/-`의 Actions "복숭아 가격 수집"이 출하기 동안 매일 16:10(한국 시간)에 실행됨. 비수기에는 바로 끝남.
 - 저장 위치: Firestore `peach_daily` 컬렉션 (문서 하나 = 하루치, 상자 크기별·시장별 집계)
 - 서버 코드: 이 저장소 최상위 폴더(`app.py`, `collect.py`, `peach_price/`). 자세한 설명은 [`SERVER.md`](SERVER.md)
+- **자동 수집 다시 켜기:** 공개 저장소는 60일 동안 변경이 없으면 GitHub가 예약 실행을 끔. 매년 출하기 전(6월 초)에 이 저장소의 Actions 탭 → "복숭아 가격 수집" → **Enable workflow**를 눌러 둘 것. 같은 화면의 **Run workflow**로 바로 시험해 볼 수도 있음.
