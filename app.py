@@ -10,6 +10,10 @@ GET /forecast?harvest_date=2027-06-22&size=4
 GET /markets   시장 코드 목록
 GET /health    상태 확인
 """
+import logging
+import os
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -19,6 +23,7 @@ from peach_price import config
 from peach_price.prices import build_view
 
 KST = timezone(timedelta(hours=9))
+log = logging.getLogger("uvicorn.error")
 SIZES = {"2", "2.5", "3", "4", "4.5", "5", "10"}
 
 app = FastAPI(title="미홍 복숭아 가격 API")
@@ -29,10 +34,11 @@ _store = None
 
 
 def get_store():
+    """Firestore 조회 결과를 메모리에 1시간 보관하는 저장소 (자료는 하루 한 번만 바뀜)."""
     global _store
     if _store is None:
-        from peach_price.store import FirestoreStore
-        _store = FirestoreStore()
+        from peach_price.store import CachedStore, FirestoreStore
+        _store = CachedStore(FirestoreStore(), ttl=config.CACHE_TTL_SEC)
     return _store
 
 
@@ -78,7 +84,7 @@ def _auth_apps():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "model_ready": _forecaster["obj"] is not None}
 
 
 @app.get("/markets")
@@ -86,20 +92,78 @@ def markets():
     return [{"code": k, "name": v} for k, v in config.MARKETS.items()]
 
 
-_forecaster = {"day": None, "obj": None}
+_forecaster = {"built_at": 0.0, "obj": None, "refreshing": False}
+_build_lock = threading.Lock()
+BT_META_KEY = "forecast_backtest"
 
 
-def get_forecaster(store):
-    """하루에 한 번만 다시 학습함 (자료가 하루 단위로만 바뀜)."""
+def _build_forecaster(store):
+    """예측 모델을 새로 만들어 교체함. 검증 결과는 자료가 그대로면 저장분을 다시 씀."""
     from peach_price.forecast import Forecaster
-    today = datetime.now(KST).date()
-    if _forecaster["day"] != today or _forecaster["obj"] is None:
+    with _build_lock:
+        today = datetime.now(KST).date()
         docs = []
         for y in range(today.year - 8, today.year + 1):
             docs.extend(store.get_year(y))
-        _forecaster["obj"] = Forecaster(docs)
-        _forecaster["day"] = today
-    return _forecaster["obj"]
+        try:
+            cached = store.get_meta(BT_META_KEY)
+        except Exception as e:  # 저장분을 못 읽어도 예측은 되게 함
+            log.warning("검증 결과 저장분 읽기 실패: %s", e)
+            cached = None
+        t0 = time.time()
+        f = Forecaster(docs, bt_cache=cached)
+        if not f.bt_reused:
+            try:
+                store.set_meta(BT_META_KEY, f.bt_doc())
+            except Exception as e:
+                log.warning("검증 결과 저장 실패: %s", e)
+        _forecaster["obj"] = f
+        _forecaster["built_at"] = time.time()
+        log.info("예측 모델 준비 %.1f초 (검증 결과 %s)", time.time() - t0,
+                 "재사용" if f.bt_reused else "새로 계산")
+        return f
+
+
+def _refresh_in_background(store):
+    if _forecaster["refreshing"]:
+        return
+    _forecaster["refreshing"] = True
+
+    def run():
+        try:
+            _build_forecaster(store)
+        except Exception:
+            log.exception("예측 모델 갱신 실패 (기존 모델 계속 사용)")
+        finally:
+            _forecaster["refreshing"] = False
+    threading.Thread(target=run, daemon=True).start()
+
+
+def get_forecaster(store):
+    """준비된 모델을 바로 돌려줌. 오래됐으면 지금 요청은 기존 모델로 답하고 뒤에서 새로 만듦."""
+    f = _forecaster["obj"]
+    if f is None:
+        return _build_forecaster(store)  # 서버 켜질 때 미리 만드는 중이면 끝날 때까지 기다림
+    if time.time() - _forecaster["built_at"] > config.MODEL_REFRESH_HOURS * 3600:
+        _refresh_in_background(store)
+    return f
+
+
+@app.on_event("startup")
+def _warm_up():
+    """서버가 켜지자마자 자료를 읽고 예측 모델을 만들어 둠. 첫 사용자가 기다리지 않게 함."""
+    if os.environ.get("SKIP_WARMUP") == "1":
+        return
+
+    def run():
+        try:
+            _forecaster["refreshing"] = True
+            _build_forecaster(get_store())
+        except Exception:
+            log.exception("시작 시 예측 모델 준비 실패 (첫 요청 때 다시 시도)")
+        finally:
+            _forecaster["refreshing"] = False
+    threading.Thread(target=run, daemon=True).start()
 
 
 @app.get("/forecast")
