@@ -134,3 +134,21 @@ def prices(size: str | None = Query("4"), market: str | None = None,
     except ValueError:
         raise HTTPException(400, "date는 YYYY-MM-DD 형식")
     return build_view(store, today, size or None, market)
+
+
+@app.get('/history/week')
+def historical_week(year: int = Query(..., ge=2020, le=2100),
+                    month: int = Query(..., ge=6, le=7),
+                    week: int = Query(..., ge=1, le=5),
+                    size: str = Query('4'),
+                    _user=Depends(verify_user), store=Depends(get_store)):
+    """선택 연도·월·월내 주차(1~7일 단위)의 실제 경매 가격."""
+    from history_prices import history_week
+    if size not in SIZES:
+        raise HTTPException(400, f'size는 {sorted(SIZES, key=float)} 중 하나')
+    if year > datetime.now(KST).year:
+        raise HTTPException(400, '미래 연도는 조회할 수 없습니다')
+    try:
+        return history_week(store, year, month, week, size)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
