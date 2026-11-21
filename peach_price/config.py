@@ -52,6 +52,12 @@ NUM_OF_ROWS = 1000
 
 # Firestore 컬렉션 이름
 FIRESTORE_COLLECTION = os.environ.get("FIRESTORE_COLLECTION", "peach_daily")
+# 예측 모델 검증 결과 같은 계산 결과를 보관하는 컬렉션
+META_COLLECTION = os.environ.get("META_COLLECTION", "peach_meta")
+
+# 서버가 메모리에 시세 자료를 보관하는 시간(초)과 예측 모델을 다시 만드는 주기(시간)
+CACHE_TTL_SEC = float(os.environ.get("CACHE_TTL_SEC", "3600"))
+MODEL_REFRESH_HOURS = float(os.environ.get("MODEL_REFRESH_HOURS", "6"))
 
 # 로그인 토큰을 받아 줄 Firebase 프로젝트 (앱 로그인 프로젝트, 쉼표로 여러 개)
 AUTH_PROJECTS = os.environ.get("FIREBASE_AUTH_PROJECTS", "peachscope-a92c1,sfm-work").split(",")

@@ -168,14 +168,44 @@ def backtest(obs: list[Obs]) -> dict:
     return out
 
 
+def data_key(obs: list[Obs]) -> str:
+    """학습 자료가 바뀌었는지 판단하는 열쇠. 해마다 관측치 수와 마지막 날짜로 만듦.
+
+    지난 해 자료는 바뀌지 않으므로 비수기에는 이 값이 그대로이고, 출하기에는 매일 바뀜.
+    """
+    by_year: dict[int, list[Obs]] = {}
+    for o in obs:
+        by_year.setdefault(o.d.year, []).append(o)
+    parts = [f"{y}:{len(v)}:{max(o.d for o in v).isoformat()}" for y, v in sorted(by_year.items())]
+    return f"v1|{sorted(STD_SIZES)}|{MIN_KG_PER_DAY}|" + ",".join(parts)
+
+
+def bt_to_doc(bt: dict, key: str) -> dict:
+    """Firestore에 넣을 수 있게 (숫자 열쇠 → 목록) 바꿈."""
+    return {"key": key, "items": [{"bucket": i, **v} for i, v in bt.items()]}
+
+
+def bt_from_doc(doc: dict | None, key: str) -> dict | None:
+    if not doc or doc.get("key") != key:
+        return None
+    return {int(x["bucket"]): {k: v for k, v in x.items() if k != "bucket"} for x in doc["items"]}
+
+
 class Forecaster:
-    def __init__(self, docs: list[dict]):
+    def __init__(self, docs: list[dict], bt_cache: dict | None = None):
+        """bt_cache: 저장해 둔 검증 결과 문서. 자료가 그대로면 무거운 백테스트를 다시 돌리지 않음."""
         self.obs = rows_from_docs(docs)
         self.years = sorted({o.d.year for o in self.obs})
         if len(self.years) < 2:
             raise ValueError("학습에 쓸 출하기 자료가 2년 이상 필요함")
         self.model = SeasonModel(self.obs)
-        self.bt = backtest(self.obs)
+        self.data_key = data_key(self.obs)
+        cached = bt_from_doc(bt_cache, self.data_key)
+        self.bt_reused = cached is not None
+        self.bt = cached if cached is not None else backtest(self.obs)
+
+    def bt_doc(self) -> dict:
+        return bt_to_doc(self.bt, self.data_key)
 
     def _err_for(self, h: int) -> dict:
         b = _bucket(h)
