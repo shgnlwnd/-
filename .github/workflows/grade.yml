@@ -1,0 +1,51 @@
+# 등급별 시세 재집계와 Firestore 현황 보고. Actions 탭에서 직접 실행함.
+# - report: 연도별 문서 수, 등급 자료 날짜 범위, 실제 등급명(grd_nm)만 출력
+# - backfill: 백업 → grades 없는 날짜 재집계 → 현황 출력
+#   날짜당 시장 32곳을 다시 부르므로 2020~2026년 전체는 약 7,000회 호출(일일 한도 10,000회).
+#   중간에 끊기면 같은 설정으로 다시 실행하면 이미 끝난 날짜는 건너뜀.
+# 결과는 실행 화면의 Summary와 백업 파일(Artifacts)에서 확인함.
+name: 등급 재집계와 자료 현황
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "report(현황만) 또는 backfill(재집계)"
+        required: true
+        default: report
+        type: choice
+        options: [report, backfill]
+      from_year:
+        description: 재집계 시작 연도
+        default: "2020"
+      to_year:
+        description: 재집계 끝 연도
+        default: "2026"
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      KAT_SERVICE_KEY: ${{ secrets.KAT_SERVICE_KEY }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: 재집계 전 백업
+        if: inputs.mode == 'backfill'
+        run: python collect.py export peach_daily_backup.json
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'backfill'
+        with:
+          name: peach_daily_backup
+          path: peach_daily_backup.json
+      - name: 등급 재집계
+        if: inputs.mode == 'backfill'
+        run: python -u collect.py grade-backfill ${{ inputs.from_year }} ${{ inputs.to_year }}
+      - name: 현황 보고
+        if: always()
+        run: python collect.py report | tee -a "$GITHUB_STEP_SUMMARY"
