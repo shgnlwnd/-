@@ -2,6 +2,9 @@
 
   python collect.py probe                 # 응답 형식과 코드 확인 (서울가락, 2026-06-25)
   python collect.py backfill 2024 2026    # 지난 시즌 자료 한꺼번에 받기 (중간에 끊겨도 이어서 받음)
+  python collect.py grade-backfill 2020 2026  # 등급(grades) 없는 날짜를 원자료로 다시 집계
+  python collect.py report                # 연도별 문서 수, 등급 자료 날짜 범위, 실제 등급명
+  python collect.py export backup.json    # 컬렉션 전체 백업
   python collect.py day 2026-06-25        # 하루치만 다시 받기
   python collect.py daily                 # 오늘 자료 받기 (Render Cron Job용, 비수기엔 아무것도 안 함)
 """
@@ -63,6 +66,57 @@ def collect_day(store, ymd: str, skip_done: bool = False) -> dict | None:
     return agg
 
 
+def _all_docs(store) -> list[dict]:
+    return [d.to_dict() for d in store.col.stream()]
+
+
+def report(store):
+    """Firestore 자료 현황: 연도별 문서 수, 등급 자료가 있는 날짜 범위, 실제 등급명(grd_nm)."""
+    docs = _all_docs(store)
+    by_year: dict[int, list[dict]] = {}
+    for d in docs:
+        by_year.setdefault(int(d.get("year") or d["date"][:4]), []).append(d)
+    print(f"# Firestore {config.FIRESTORE_COLLECTION} 현황 (문서 {len(docs)}개)\n")
+    print("| 연도 | 문서 수 | 거래 있는 날 | 등급 필드 있는 문서 | 등급 거래 있는 날짜 범위 |")
+    print("|---|---|---|---|---|")
+    for y in sorted(by_year):
+        ds = sorted(by_year[y], key=lambda x: x["date"])
+        trade = [d for d in ds if d.get("all")]
+        graded = [d for d in ds if "grades" in d]
+        gdays = [d["date"] for d in graded if any(d["grades"].get(k) for k in d["grades"])]
+        rng = f"{gdays[0]} ~ {gdays[-1]} ({len(gdays)}일)" if gdays else "없음"
+        print(f"| {y} | {len(ds)} | {len(trade)} | {len(graded)} | {rng} |")
+    names: Counter = Counter()
+    days: dict[str, set] = {}
+    kg: Counter = Counter()
+    sizes: dict[str, set] = {}
+    for d in docs:
+        for size, gs in (d.get("grades") or {}).items():
+            for g, s in gs.items():
+                names[g] += s.get("rows") or 0
+                days.setdefault(g, set()).add(d["date"])
+                kg[g] += s.get("total_kg") or 0
+                sizes.setdefault(g, set()).add(size)
+    print("\n## 실제 등급명 (grd_nm, 빈 값은 '미표기')\n")
+    if not names:
+        print("등급 자료 없음 (grade-backfill 전)")
+        return
+    print("| 등급명 | 경매 건수 | 거래일 수 | 총 물량(kg) | 상자 크기(kg) |")
+    print("|---|---|---|---|---|")
+    for g, n in names.most_common():
+        sz = ", ".join(sorted(sizes[g], key=float))
+        print(f"| {g!r} | {n:,} | {len(days[g])} | {round(kg[g]):,} | {sz} |")
+
+
+def export(store, path: str):
+    """재집계 전 백업용. 컬렉션 전체를 JSON 파일로 저장함."""
+    import json
+    docs = _all_docs(store)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(docs, f, ensure_ascii=False, default=str)
+    print(f"{len(docs)}개 문서를 {path}에 저장함")
+
+
 def season_dates(year: int):
     d = date.fromisoformat(f"{year}-{config.SEASON_START}")
     end = date.fromisoformat(f"{year}-{config.SEASON_END}")
@@ -83,6 +137,19 @@ def main(argv):
         for y in range(y1, y2 + 1):
             for ymd in season_dates(y):
                 collect_day(store, ymd, skip_done=True)
+    elif cmd == "grade-backfill":
+        # 등급(grades)이 없는 날짜만 원자료를 다시 받아 재집계함. 끊기면 같은 명령으로 이어서 받음.
+        y1, y2 = int(argv[2]), int(argv[3])
+        for y in range(y1, y2 + 1):
+            for ymd in season_dates(y):
+                existing = store.get_day(ymd)
+                if existing is not None and "grades" in existing:
+                    continue
+                collect_day(store, ymd, skip_done=False)
+    elif cmd == "report":
+        report(store)
+    elif cmd == "export":
+        export(store, argv[2] if len(argv) > 2 else "peach_daily_backup.json")
     elif cmd == "day":
         collect_day(store, argv[2])
     elif cmd == "daily":

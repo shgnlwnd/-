@@ -7,6 +7,8 @@ GET /prices?size=4&market=380401&date=2027-06-25
   - 헤더: Authorization: Bearer <Firebase ID 토큰>  (REQUIRE_AUTH=true일 때)
 GET /forecast?harvest_date=2027-06-22&size=4
   - 예상 수확일 앞뒤 3일(총 7일) 일별 예상 가격·범위·예측 오차
+GET /history/week?year=2026&month=6&week=3&size=4&grade=all
+  - 연도·월·월내 주차의 실제 경매가. grade는 all 또는 등급명(available_grades 참고)
 GET /markets   시장 코드 목록
 GET /health    상태 확인
 """
@@ -205,6 +207,7 @@ def historical_week(year: int = Query(..., ge=2020, le=2100),
                     month: int = Query(..., ge=6, le=7),
                     week: int = Query(..., ge=1, le=5),
                     size: str = Query('4'),
+                    grade: str = Query('all', description="'all' 또는 경매 원자료 등급명(grd_nm) 그대로"),
                     _user=Depends(verify_user), store=Depends(get_store)):
     """선택 연도·월·월내 주차(1~7일 단위)의 실제 경매 가격."""
     from history_prices import history_week
@@ -213,6 +216,6 @@ def historical_week(year: int = Query(..., ge=2020, le=2100),
     if year > datetime.now(KST).year:
         raise HTTPException(400, '미래 연도는 조회할 수 없습니다')
     try:
-        return history_week(store, year, month, week, size)
+        return history_week(store, year, month, week, size, grade)
     except ValueError as e:
         raise HTTPException(400, str(e))
