@@ -91,10 +91,13 @@ def aggregate_day(rows: list[dict]) -> dict:
     """하루치 원자료 -> 전국/시장별, 상자 크기별 거래량 가중 평균."""
     recs = [r for r in (to_record(x) for x in rows if is_target(x)) if r]
     by_size: dict[str, list[dict]] = {}
+    by_grade: dict[str, dict[str, list[dict]]] = {}
     by_market: dict[str, dict[str, list[dict]]] = {}
     for r in recs:
         k = size_key(r["kg"])
         by_size.setdefault(k, []).append(r)
+        grade = r["grade"] or "미표기"
+        by_grade.setdefault(k, {}).setdefault(grade, []).append(r)
         by_market.setdefault(r["market"], {}).setdefault(k, []).append(r)
 
     sizes = {}
@@ -109,4 +112,10 @@ def aggregate_day(rows: list[dict]) -> dict:
             for k, rs in d.items()}
         for m, d in by_market.items()
     }
-    return {"all": _summ(recs) if recs else None, "sizes": sizes, "markets": markets}
+    # 등급/상자무게별 총 물량과 총 금액을 함께 저장해 재집계 없이 계산 가능하게 함.
+    grades = {
+        k: {grade: _summ(rs) for grade, rs in buckets.items()}
+        for k, buckets in by_grade.items()
+    }
+    return {"all": _summ(recs) if recs else None, "sizes": sizes,
+            "markets": markets, "grades": grades}

@@ -176,8 +176,9 @@ def data_key(obs: list[Obs]) -> str:
     by_year: dict[int, list[Obs]] = {}
     for o in obs:
         by_year.setdefault(o.d.year, []).append(o)
-    parts = [f"{y}:{len(v)}:{max(o.d for o in v).isoformat()}" for y, v in sorted(by_year.items())]
-    return f"v1|{sorted(STD_SIZES)}|{MIN_KG_PER_DAY}|" + ",".join(parts)
+    parts = [f"{y}:{len(v)}:{max(o.d for o in v).isoformat()}:{round(sum(o.won_per_kg for o in v))}"
+             for y, v in sorted(by_year.items())]
+    return f"v2|{sorted(STD_SIZES)}|{MIN_KG_PER_DAY}|" + ",".join(parts)
 
 
 def bt_to_doc(bt: dict, key: str) -> dict:
