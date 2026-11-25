@@ -7,8 +7,7 @@ GET /prices?size=4&market=380401&date=2027-06-25
   - 헤더: Authorization: Bearer <Firebase ID 토큰>  (REQUIRE_AUTH=true일 때)
 GET /forecast?harvest_date=2027-06-22&size=4
   - 예상 수확일 앞뒤 3일(총 7일) 일별 예상 가격·범위·예측 오차
-GET /history/week?year=2026&month=6&week=3&size=4&grade=all
-  - 연도·월·월내 주차의 실제 경매가. grade는 all 또는 등급명(available_grades 참고)
+  - 선택: harvest_p10, harvest_p90 (수확일 분포), grade_probs=특:0.2,상:0.6,중:0.2 (등급별 가격)
 GET /markets   시장 코드 목록
 GET /health    상태 확인
 """
@@ -22,6 +21,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from peach_price import config
+from peach_price.grades import parse_grade_probs
 from peach_price.prices import build_view
 
 KST = timezone(timedelta(hours=9))
@@ -169,20 +169,34 @@ def _warm_up():
 
 
 @app.get("/forecast")
-def forecast(harvest_date: str = Query(..., description="예상 수확일 YYYY-MM-DD"),
+def forecast(harvest_date: str = Query(..., description="예상 수확일 YYYY-MM-DD (수확일 분포의 p50)"),
              size: str = Query("4"),
              today_: str | None = Query(None, alias="today"),
+             harvest_p10: str | None = Query(None, description="수확일 분포 p10 (harvest_p90과 함께)"),
+             harvest_p90: str | None = Query(None, description="수확일 분포 p90 (harvest_p10과 함께)"),
+             grade_probs: str | None = Query(None, description="등급 확률 '특:0.2,상:0.6,중:0.2' (특·상·중·하, 합 1)"),
              _user=Depends(verify_user), store=Depends(get_store)):
-    """예상 수확일 앞뒤 3일(총 7일)의 일별 예상 가격, 범위, 예측 오차."""
+    """예상 수확일 앞뒤 3일(총 7일)의 일별 예상 가격, 범위, 예측 오차.
+
+    harvest_p10, harvest_p90을 함께 주면 수확일이 그 분포를 따른다고 보고 기대가격과 범위를 냄
+    (수확 모델의 days_range_90을 날짜로 바꿔 넣음). 둘 다 없으면 기존 동작 그대로."""
     if size not in SIZES:
         raise HTTPException(400, f"size는 {sorted(SIZES, key=float)} 중 하나")
+    if (harvest_p10 is None) != (harvest_p90 is None):
+        raise HTTPException(400, "harvest_p10과 harvest_p90은 함께 주어야 함")
     try:
         harvest = date.fromisoformat(harvest_date)
         today = date.fromisoformat(today_) if today_ else datetime.now(KST).date()
+        p10 = date.fromisoformat(harvest_p10) if harvest_p10 else None
+        p90 = date.fromisoformat(harvest_p90) if harvest_p90 else None
     except ValueError:
         raise HTTPException(400, "날짜는 YYYY-MM-DD 형식")
     try:
-        return get_forecaster(store).forecast(harvest, float(size), today)
+        probs = parse_grade_probs(grade_probs) if grade_probs else None
+        if p10 is not None:
+            return get_forecaster(store).forecast_distribution(p10, harvest, p90, float(size), today,
+                                                               grade_probs=probs)
+        return get_forecaster(store).forecast(harvest, float(size), today, grade_probs=probs)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -207,9 +221,9 @@ def historical_week(year: int = Query(..., ge=2020, le=2100),
                     month: int = Query(..., ge=6, le=7),
                     week: int = Query(..., ge=1, le=5),
                     size: str = Query('4'),
-                    grade: str = Query('all', description="'all' 또는 경매 원자료 등급명(grd_nm) 그대로"),
+                    grade: str = Query('all'),
                     _user=Depends(verify_user), store=Depends(get_store)):
-    """선택 연도·월·월내 주차(1~7일 단위)의 실제 경매 가격."""
+    """선택 연도·월·월내 주차(1~7일 단위)의 실제 경매 가격. grade가 all이 아니면 해당 등급만."""
     from history_prices import history_week
     if size not in SIZES:
         raise HTTPException(400, f'size는 {sorted(SIZES, key=float)} 중 하나')

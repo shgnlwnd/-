@@ -4,6 +4,7 @@
   python collect.py backfill 2024 2026    # 지난 시즌 자료 한꺼번에 받기 (중간에 끊겨도 이어서 받음)
   python collect.py grade-backfill 2020 2026  # 등급(grades) 없는 날짜를 원자료로 다시 집계
   python collect.py report                # 연도별 문서 수, 등급 자료 날짜 범위, 실제 등급명
+  python collect.py grade-ratios          # 등급 가격비(특·상·중·하) 실제 값
   python collect.py export backup.json    # 컬렉션 전체 백업
   python collect.py day 2026-06-25        # 하루치만 다시 받기
   python collect.py daily                 # 오늘 자료 받기 (Render Cron Job용, 비수기엔 아무것도 안 함)
@@ -108,6 +109,25 @@ def report(store):
         print(f"| {g!r} | {n:,} | {len(days[g])} | {round(kg[g]):,} | {sz} |")
 
 
+def grade_ratios(store):
+    """등급 가격비(특·상·중·하 ÷ 전체) 실제 값. /forecast의 grade_probs 계산에 쓰는 값과 같음."""
+    from peach_price.forecast import STD_SIZES
+    from peach_price.grades import GRADES, compute_ratios
+    out = compute_ratios(_all_docs(store))
+    print("\n## 등급 가격비 (출하기 합산, 해 평균)\n")
+    print("| 상자 | 등급 | 가격비 | 연도 수 | 해별 오차(%) | 물량 비중(%) |")
+    print("|---|---|---|---|---|---|")
+    for kg in sorted(out, key=float):
+        if float(kg) not in STD_SIZES:
+            continue
+        for g in GRADES:
+            v = out[kg].get(g)
+            if v:
+                print(f"| {kg}kg | {g} | {v['ratio']} | {v['n_years']} | {v['error_pct']} | {v['share_pct']} |")
+            else:
+                print(f"| {kg}kg | {g} | 자료 부족 | - | - | - |")
+
+
 def export(store, path: str):
     """재집계 전 백업용. 컬렉션 전체를 JSON 파일로 저장함."""
     import json
@@ -148,6 +168,8 @@ def main(argv):
                 collect_day(store, ymd, skip_done=False)
     elif cmd == "report":
         report(store)
+    elif cmd == "grade-ratios":
+        grade_ratios(store)
     elif cmd == "export":
         export(store, argv[2] if len(argv) > 2 else "peach_daily_backup.json")
     elif cmd == "day":
