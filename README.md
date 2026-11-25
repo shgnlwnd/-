@@ -72,6 +72,17 @@
 
 안드로이드: `PeachPriceRepository().getForecast(harvestDate = "2027-06-22", size = "4")`
 
+### 4.1 선택 파라미터: 수확일 분포와 등급 확률 (2026-11-25 배포)
+
+모두 선택이며 없으면 위의 기존 동작과 응답이 그대로임.
+
+| 파라미터 | 설명 |
+|---|---|
+| `harvest_p10`, `harvest_p90` | 수확일 분포(`harvest_date`가 p50). **둘 다 주거나 둘 다 생략**. `p10 ≤ harvest_date ≤ p90`, 폭 30일 이내, 출하기(6/1~7/15) 밖이면 400 |
+| `grade_probs` | 등급 확률 `특:0.5,상:0.3,중:0.2` (특·상·중·하만, 합 1±2%). 형식 오류·합 오류는 400 |
+
+응답 추가 필드: 분포 사용 시 `distribution`, `expected_box_price`, `expected_range`, `days[].weight` / 등급 사용 시 `by_grade`, `grade_expected_box_price`, `grade_expected_range`, `grade_ratio_error_pct`, `grade_note`. 해당 상자 kg의 등급 자료가 2개 해 미만이면 `by_grade`는 null이고 `grade_note`에 사유가 있음. 등급 비율 계산은 [`peach_price/grades.py`](peach_price/grades.py).
+
 ## 5. 예측 모델 설명
 
 **Gradient Boosting 회귀**(scikit-learn `GradientBoostingRegressor`) + 올해 가격 수준 보정. 코드: [`peach_price/forecast.py`](peach_price/forecast.py)
@@ -119,7 +130,8 @@
 |---|---|
 | `android/` | 앱에 넣을 Kotlin 코드와 사용법 (**박현이 받을 것**) |
 | `app.py` | 가격 API 서버 (FastAPI) |
-| `peach_price/forecast.py` | 가격 예측 모델 |
+| `peach_price/forecast.py` | 가격 예측 모델 (수확일 분포 `forecast_distribution`, 등급 반영 포함) |
+| `peach_price/grades.py` | 등급 가격비(특·상·중·하) 계산, `grade_probs` 해석 |
 | `peach_price/prices.py` | 시세 조회 계산 |
 | `peach_price/normalize.py`, `kat_client.py`, `store.py` | 자료 수집·정리·저장 |
 | `collect.py` | 자료 수집 명령 |
