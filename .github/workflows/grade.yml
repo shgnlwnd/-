@@ -54,7 +54,9 @@ jobs:
         if: inputs.mode == 'trees'
         with:
           name: tree_questions
-          path: tree_questions.csv
+          path: |
+            tree_questions.csv
+            tree_questions_leaves.csv
       - name: 현황 보고
         if: always() && inputs.mode != 'trees'
         run: |
