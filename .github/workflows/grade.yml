@@ -3,6 +3,7 @@
 # - backfill: 백업 → grades 없는 날짜 재집계 → 현황 출력
 #   날짜당 시장 32곳을 다시 부르므로 2020~2026년 전체는 약 7,000회 호출(일일 한도 10,000회).
 #   중간에 끊기면 같은 설정으로 다시 실행하면 이미 끝난 날짜는 건너뜀.
+# - trees: 예측 모델(나무 200개)의 질문 전체 목록. 요약은 Summary, 전체 CSV는 Artifacts
 # 결과는 실행 화면의 Summary와 백업 파일(Artifacts)에서 확인함.
 name: 등급 재집계와 자료 현황
 
@@ -10,11 +11,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "report(현황만) 또는 backfill(재집계)"
+        description: "report(현황만), backfill(재집계), trees(예측 모델 나무 질문 목록)"
         required: true
         default: report
         type: choice
-        options: [report, backfill]
+        options: [report, backfill, trees]
       from_year:
         description: 재집계 시작 연도
         default: "2020"
@@ -46,8 +47,16 @@ jobs:
       - name: 등급 재집계
         if: inputs.mode == 'backfill'
         run: python -u collect.py grade-backfill ${{ inputs.from_year }} ${{ inputs.to_year }}
+      - name: 예측 모델 나무 질문 목록
+        if: inputs.mode == 'trees'
+        run: python collect.py tree-dump tree_questions.csv | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'trees'
+        with:
+          name: tree_questions
+          path: tree_questions.csv
       - name: 현황 보고
-        if: always()
+        if: always() && inputs.mode != 'trees'
         run: |
           python collect.py report | tee -a "$GITHUB_STEP_SUMMARY"
           python collect.py grade-ratios | tee -a "$GITHUB_STEP_SUMMARY"
