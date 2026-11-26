@@ -5,6 +5,7 @@
   python collect.py grade-backfill 2020 2026  # 등급(grades) 없는 날짜를 원자료로 다시 집계
   python collect.py report                # 연도별 문서 수, 등급 자료 날짜 범위, 실제 등급명
   python collect.py grade-ratios          # 등급 가격비(특·상·중·하) 실제 값
+  python collect.py tree-dump trees.csv   # 예측 모델 나무 200개의 질문 전체 목록
   python collect.py export backup.json    # 컬렉션 전체 백업
   python collect.py day 2026-06-25        # 하루치만 다시 받기
   python collect.py daily                 # 오늘 자료 받기 (Render Cron Job용, 비수기엔 아무것도 안 함)
@@ -128,6 +129,85 @@ def grade_ratios(store):
                 print(f"| {kg}kg | {g} | 자료 부족 | - | - | - |")
 
 
+def _question(feature: int, thr: float) -> tuple[str, str]:
+    """나무 갈림길 질문을 사람이 읽는 말로. (입력 이름, 질문)"""
+    from datetime import date, timedelta
+    if feature == 0:
+        day = int(thr)                       # season_day <= thr 이면 왼쪽
+        d = date(2026, 6, 1) + timedelta(days=day)
+        return "출하기 며칠째", f"{d.month}월 {d.day}일(출하기 {day}일째)까지인가? (≤ {thr:g})"
+    if feature == 1:
+        names = "월화수목금토일"
+        upto = names[: int(thr) + 1]
+        return "요일", f"{upto[0]}~{upto[-1]}요일인가? (요일 ≤ {thr:g})" if len(upto) > 1 else f"월요일인가? (요일 ≤ {thr:g})"
+    return "상자 크기", f"{thr:g}kg 이하 상자인가?"
+
+
+def tree_dump(store, path: str):
+    """예측 모델(시즌 곡선 Gradient Boosting)의 나무 200개에 들어간 질문을 모두 꺼냄.
+
+    - CSV(path): 나무·노드마다 한 줄. 갈림길은 질문, 잎은 그 칸의 가격 영향(%)
+    - 화면(요약): 입력별 질문 수, 서로 다른 질문 목록과 쓰인 횟수, 1번 나무 구조
+    """
+    import csv
+    import math
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+    from peach_price.forecast import Forecaster
+    today = datetime.now(timezone(timedelta(hours=9))).date()
+    docs = []
+    for y in range(today.year - 8, today.year + 1):
+        docs.extend(store.get_year(y))
+    m = Forecaster(docs).model
+    gbm = m.gbm
+    lr = gbm.learning_rate
+    rows, uniq, feat_count = [], Counter(), Counter()
+    n_leaves = 0
+    for t, est in enumerate(gbm.estimators_[:, 0], start=1):
+        tr = est.tree_
+        depth = {0: 0}
+        for node in range(tr.node_count):
+            left, right = tr.children_left[node], tr.children_right[node]
+            if left != -1:
+                depth[left] = depth[right] = depth[node] + 1
+                name, q = _question(int(tr.feature[node]), float(tr.threshold[node]))
+                feat_count[name] += 1
+                uniq[(name, q)] += 1
+                rows.append([t, node, depth[node], "질문", name, round(float(tr.threshold[node]), 3), q,
+                             int(tr.n_node_samples[node]), ""])
+            else:
+                n_leaves += 1
+                eff = (math.exp(lr * float(tr.value[node][0][0])) - 1) * 100
+                rows.append([t, node, depth[node], "잎", "", "", "", int(tr.n_node_samples[node]), round(eff, 3)])
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["나무", "노드", "깊이", "구분", "입력", "기준값", "질문(예=왼쪽)", "자료 수(표본)", "잎 가격 영향(%)"])
+        w.writerows(rows)
+    n_q = sum(feat_count.values())
+    print(f"## 예측 모델 나무 질문 (학습 {len(m.obs)}건, 연도 {sorted({o.d.year for o in m.obs})})\n")
+    print(f"- 나무 {len(gbm.estimators_)}개, 질문(갈림길) {n_q}개, 잎 {n_leaves}개, 서로 다른 질문 {len(uniq)}개")
+    print(f"- 잎 가격 영향 = 학습률({lr}) × 잎 값을 가격 배수로 바꾼 것. 나무 200개 영향을 모두 곱한 것이 시즌 곡선임")
+    print(f"- 전체 목록: {path}\n")
+    print("### 입력별 질문 수\n")
+    print("| 입력 | 질문 수 | 비율 |")
+    print("|---|---|---|")
+    for name, c in feat_count.most_common():
+        print(f"| {name} | {c} | {100 * c / n_q:.1f}% |")
+    print("\n### 서로 다른 질문 전체 (많이 쓰인 순)\n")
+    print("| 순위 | 입력 | 질문 | 쓰인 횟수 |")
+    print("|---|---|---|---|")
+    for i, ((name, q), c) in enumerate(uniq.most_common(), start=1):
+        print(f"| {i} | {name} | {q} | {c} |")
+    print("\n### 1번 나무 구조\n")
+    print("| 노드 | 깊이 | 구분 | 질문 / 잎 가격 영향 | 자료 수 |")
+    print("|---|---|---|---|---|")
+    for r in rows:
+        if r[0] != 1:
+            break
+        body = r[6] if r[3] == "질문" else f"{r[8]:+.3f}%"
+        print(f"| {r[1]} | {r[2]} | {r[3]} | {body} | {r[7]} |")
+
+
 def export(store, path: str):
     """재집계 전 백업용. 컬렉션 전체를 JSON 파일로 저장함."""
     import json
@@ -166,6 +246,8 @@ def main(argv):
                 if existing is not None and "grades" in existing:
                     continue
                 collect_day(store, ymd, skip_done=False)
+    elif cmd == "tree-dump":
+        tree_dump(store, argv[2] if len(argv) > 2 else "tree_questions.csv")
     elif cmd == "report":
         report(store)
     elif cmd == "grade-ratios":
