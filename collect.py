@@ -10,6 +10,7 @@
   python collect.py day 2026-06-25        # 하루치만 다시 받기
   python collect.py daily                 # 오늘 자료 받기 (Render Cron Job용, 비수기엔 아무것도 안 함)
 """
+import math
 import sys
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
@@ -183,6 +184,34 @@ def tree_dump(store, path: str):
         w = csv.writer(f)
         w.writerow(["나무", "노드", "깊이", "구분", "입력", "기준값", "질문(예=왼쪽)", "자료 수(표본)", "잎 가격 영향(%)"])
         w.writerows(rows)
+
+    # 잎마다 뿌리에서 잎까지 거친 질문과 답(예/아니오), 그리고 그 답을 합친 조건
+    leaf_rows, cond_count, depth_count = [], Counter(), Counter()
+    for t, est in enumerate(gbm.estimators_[:, 0], start=1):
+        tr = est.tree_
+        stack = [(0, [])]
+        while stack:
+            node, path_q = stack.pop()
+            left, right = tr.children_left[node], tr.children_right[node]
+            if left != -1:
+                f_, thr = int(tr.feature[node]), float(tr.threshold[node])
+                q = _question(f_, thr)[1]
+                stack.append((right, path_q + [(f_, thr, q, False)]))
+                stack.append((left, path_q + [(f_, thr, q, True)]))
+                continue
+            eff = (math.exp(lr * float(tr.value[node][0][0])) - 1) * 100
+            cond = _leaf_condition(path_q)
+            cond_count[cond] += 1
+            depth_count[len(path_q)] += 1
+            qs = [f"{q} → {'예' if yes else '아니오'}" for _, _, q, yes in path_q]
+            leaf_rows.append([t, node, len(path_q)] + qs + [""] * (3 - len(qs))
+                             + [cond, int(tr.n_node_samples[node]), round(eff, 3)])
+    leaf_path = path.replace(".csv", "") + "_leaves.csv"
+    with open(leaf_path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["나무", "잎 노드", "거친 질문 수", "질문1 → 답", "질문2 → 답", "질문3 → 답",
+                    "합친 조건", "자료 수(표본)", "잎 가격 영향(%)"])
+        w.writerows(leaf_rows)
     n_q = sum(feat_count.values())
     print(f"## 예측 모델 나무 질문 (학습 {len(m.obs)}건, 연도 {sorted({o.d.year for o in m.obs})})\n")
     print(f"- 나무 {len(gbm.estimators_)}개, 질문(갈림길) {n_q}개, 잎 {n_leaves}개, 서로 다른 질문 {len(uniq)}개")
@@ -206,6 +235,68 @@ def tree_dump(store, path: str):
             break
         body = r[6] if r[3] == "질문" else f"{r[8]:+.3f}%"
         print(f"| {r[1]} | {r[2]} | {r[3]} | {body} | {r[7]} |")
+
+    n_leaf_q = sum(k * v for k, v in depth_count.items())
+    print("\n## 잎에 들어간 질문 (뿌리 → 잎 경로)\n")
+    print(f"- 잎 {len(leaf_rows)}개, 잎까지 거친 질문 총 {n_leaf_q}개, 서로 다른 잎 조건 {len(cond_count)}가지")
+    print("- 거친 질문 수별 잎 수: " + ", ".join(f"{k}개 {v}잎" for k, v in sorted(depth_count.items())))
+    print(f"- 잎마다 전체 경로: {leaf_path}\n")
+    print("### 1번 나무 잎 8개의 경로\n")
+    print("| 잎 | 질문1 → 답 | 질문2 → 답 | 질문3 → 답 | 합친 조건 | 자료 수 | 가격 영향 |")
+    print("|---|---|---|---|---|---|---|")
+    for r in leaf_rows:
+        if r[0] != 1:
+            break
+        print(f"| {r[1]} | {r[3]} | {r[4]} | {r[5]} | {r[6]} | {r[7]} | {r[8]:+.3f}% |")
+    eff_by_cond = {}
+    for r in leaf_rows:
+        eff_by_cond.setdefault(r[6], []).append(r[8])
+    print("\n### 자주 나온 잎 조건 상위 40\n")
+    print("| 순위 | 합친 조건 | 잎 수 | 평균 가격 영향 |")
+    print("|---|---|---|---|")
+    for i, (c, n) in enumerate(cond_count.most_common(40), start=1):
+        e = eff_by_cond[c]
+        print(f"| {i} | {c} | {n} | {sum(e) / len(e):+.3f}% |")
+
+
+def _leaf_condition(path_q) -> str:
+    """경로의 예/아니오 답을 입력별 범위 하나로 합침. 예) 출하 6/15~6/22 · 2.75kg 초과 3.5kg 이하"""
+    from datetime import date, timedelta
+    lo = {0: None, 1: None, 2: None}
+    hi = {0: None, 1: None, 2: None}
+    for f_, thr, _, yes in path_q:
+        if f_ in (0, 1):                      # 정수 입력: ≤thr 이면 floor(thr) 이하, 아니면 floor(thr)+1 이상
+            v = math.floor(thr)
+            if yes:
+                hi[f_] = v if hi[f_] is None else min(hi[f_], v)
+            else:
+                lo[f_] = v + 1 if lo[f_] is None else max(lo[f_], v + 1)
+        else:
+            if yes:
+                hi[2] = thr if hi[2] is None else min(hi[2], thr)
+            else:
+                lo[2] = thr if lo[2] is None else max(lo[2], thr)
+    parts = []
+    if lo[0] is not None or hi[0] is not None:
+        d = lambda n: (lambda x: f"{x.month}/{x.day}")(date(2026, 6, 1) + timedelta(days=n))
+        a = d(lo[0]) if lo[0] is not None else ""
+        b = d(hi[0]) if hi[0] is not None else ""
+        parts.append(f"출하 {a}" if a == b else f"출하 {a}~{b}")
+    if lo[1] is not None or hi[1] is not None:
+        names = "월화수목금토일"
+        a = lo[1] or 0
+        if hi[1] is None:
+            parts.append(f"{names[a]}요일 이후")
+        else:
+            parts.append(f"{names[a]}요일" if a == hi[1] else f"{names[a]}~{names[hi[1]]}요일")
+    if lo[2] is not None or hi[2] is not None:
+        if lo[2] is not None and hi[2] is not None:
+            parts.append(f"{lo[2]:g}kg 초과 {hi[2]:g}kg 이하")
+        elif hi[2] is not None:
+            parts.append(f"{hi[2]:g}kg 이하")
+        else:
+            parts.append(f"{lo[2]:g}kg 초과")
+    return " · ".join(parts)
 
 
 def export(store, path: str):
